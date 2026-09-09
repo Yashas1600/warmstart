@@ -1,22 +1,21 @@
 #pragma once
-// sandbox.h — low-level namespace / mount isolation primitives
+// sandbox.h — low-level namespace / mount isolation primitives.
 // Uses clone() with PID|MNT|UTS|IPC|NET namespaces and pivot_root.
+// Linux-only: will not compile on other platforms.
 
+#include <atomic>
 #include <cstdint>
 #include <string>
-#include <functional>
 #include <chrono>
+#include <sys/types.h>
 
 namespace ws {
 
-// Timing info for individual startup phases
+// Timing info for individual startup phases (parent-side measurements).
 struct PhaseTimings {
-    double ns_create_ms   = 0;  // namespace creation
+    double ns_create_ms   = 0;  // namespace creation (clone syscall)
     double cgroup_ms      = 0;  // cgroup setup
-    double mount_ms       = 0;  // rootfs mount + pivot_root
-    double exec_ms        = 0;  // exec of workload
-    double weight_load_ms = 0;  // mmap + touch of weights file
-    double total_ms       = 0;  // end-to-end
+    double total_ms       = 0;  // end-to-end (parent-side)
 };
 
 struct SandboxConfig {
@@ -28,25 +27,31 @@ struct SandboxConfig {
     int         cpu_weight   = 100;                // cgroup cpu.weight
     bool        prefault     = false;              // MAP_POPULATE / MADV_WILLNEED
     bool        hugepages    = false;              // MADV_HUGEPAGE
+    bool        parked       = false;              // warm-pool: block before exec
 };
 
 struct SandboxHandle {
     pid_t       pid          = -1;
-    int         ready_fd     = -1;   // read-end of pipe; workload writes 'R'
+    int         ready_fd     = -1;   // read-end of pipe; workload writes 'R' on fd 3
+    int         go_fd        = -1;   // write-end of go pipe (parked sandboxes only)
     std::string cgroup_path;
     PhaseTimings timings;
 };
 
-// Launch a fully isolated sandbox from scratch (cold path).
+// Global atomic counter for unique sandbox names.
+inline std::atomic<int> sandbox_counter{0};
+
+// Launch a fully isolated sandbox from scratch.
+// If cfg.parked is true, the child blocks after mount setup before exec.
 SandboxHandle launch_cold(const SandboxConfig& cfg);
 
-// Fork from inside an already-set-up namespace (used by pool & zygote).
-SandboxHandle launch_from_fork(const SandboxConfig& cfg, pid_t template_pid);
-
-// Wait for the workload to signal ready on the pipe. Returns latency in ms.
+// Wait for the workload to signal ready ('R' on the pipe). Returns wait time in ms.
 double wait_ready(const SandboxHandle& h, int timeout_ms = 30000);
 
-// Tear down sandbox: kill process, remove cgroup, unmount.
+// Send go signal to unpark a parked sandbox (triggers exec of workload).
+void send_go(SandboxHandle& h);
+
+// Tear down sandbox: kill process, close fds, remove cgroup.
 void teardown(SandboxHandle& h);
 
 }  // namespace ws
