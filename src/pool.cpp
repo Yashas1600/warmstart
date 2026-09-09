@@ -1,7 +1,6 @@
 // pool.cpp — warm-pool: pre-initialized sandboxes handed out on demand.
 
 #include "pool.h"
-#include "cgroup.h"
 
 #include <stdexcept>
 
@@ -9,7 +8,7 @@ namespace ws {
 
 WarmPool::WarmPool(const SandboxConfig& cfg, int pool_size)
     : cfg_(cfg), target_size_(pool_size) {
-    // Pre-fill the pool.
+    // Pre-fill the pool with parked sandboxes.
     for (int i = 0; i < target_size_; ++i) {
         pool_.push_back(create_parked_sandbox());
     }
@@ -43,14 +42,15 @@ int WarmPool::available() const {
 }
 
 void WarmPool::shutdown() {
-    running_ = false;
-    cv_.notify_all();
+    bool was_running = running_.exchange(false);
+    if (!was_running) return;  // already shut down
 
+    cv_.notify_all();
     if (refill_thread_.joinable()) {
         refill_thread_.join();
     }
 
-    // Destroy remaining sandboxes.
+    // Destroy remaining parked sandboxes.
     std::lock_guard lock(mu_);
     for (auto& h : pool_) {
         teardown(h);
@@ -61,15 +61,12 @@ void WarmPool::shutdown() {
 void WarmPool::refill_loop() {
     while (running_) {
         std::unique_lock lock(mu_);
-
-        // Wait until pool is below target or we're shutting down.
         cv_.wait(lock, [this] {
             return static_cast<int>(pool_.size()) < target_size_ || !running_;
         });
 
         if (!running_) break;
 
-        // Refill one at a time, releasing the lock during creation.
         while (static_cast<int>(pool_.size()) < target_size_ && running_) {
             lock.unlock();
             auto h = create_parked_sandbox();
@@ -85,11 +82,12 @@ void WarmPool::refill_loop() {
 }
 
 SandboxHandle WarmPool::create_parked_sandbox() {
-    // Create a sandbox with namespaces, cgroup, and mounts ready,
-    // but the workload paused (waiting for a signal to exec).
-    // For the warm-pool strategy we use launch_cold() but the workload
-    // is designed to wait for a trigger before doing heavy work.
-    return launch_cold(cfg_);
+    // Create a sandbox with cfg_.parked=true: the clone child sets up
+    // namespaces, cgroup, and mounts, then blocks on the go pipe
+    // before exec'ing the workload.
+    auto parked_cfg = cfg_;
+    parked_cfg.parked = true;
+    return launch_cold(parked_cfg);
 }
 
 }  // namespace ws

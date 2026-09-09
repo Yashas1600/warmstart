@@ -1,5 +1,7 @@
 #pragma once
 // pool.h — warm-pool strategy: keep N pre-initialized sandboxes ready.
+// Parked sandboxes have namespaces, cgroups, and mounts set up but block
+// before exec. acquire() returns one; the caller sends go + waits for ready.
 // A background thread refills the pool after one is handed out.
 
 #include "sandbox.h"
@@ -16,7 +18,8 @@ public:
     explicit WarmPool(const SandboxConfig& cfg, int pool_size = 4);
     ~WarmPool();
 
-    // Grab a pre-initialized sandbox. Blocks if pool is empty.
+    // Grab a pre-initialized (parked) sandbox. Blocks if pool is empty.
+    // The caller must call send_go(h) then wait_ready(h) to start the workload.
     SandboxHandle acquire();
 
     // Current number of ready sandboxes.
@@ -37,7 +40,6 @@ private:
     std::condition_variable cv_;
     std::deque<SandboxHandle> pool_;
     std::thread refill_thread_;
-    int next_id_{0};
 };
 
 }  // namespace ws
