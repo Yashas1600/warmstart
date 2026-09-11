@@ -1,10 +1,16 @@
 #pragma once
 // zygote.h — zygote/template-process strategy.
-// A template process pre-loads heavy state (mmap'd weights file).
-// Children fork() from it and get COW memory — no reload needed.
+// A template process is created via clone() with full namespace isolation,
+// pivot_root, and pre-loaded weights (mmapped + touched). Children fork()
+// from the template and get COW memory — pages are already resident.
+//
+// NOTE: zygote children share the template's namespaces (PID, mount, UTS,
+// IPC, network). They are NOT per-request isolated. See README for the
+// tradeoff discussion.
 
 #include "sandbox.h"
 #include <sys/types.h>
+#include <string>
 
 namespace ws {
 
@@ -13,10 +19,13 @@ public:
     explicit Zygote(const SandboxConfig& cfg);
     ~Zygote();
 
-    // Initialize the template process: create sandbox, mmap weights, pause.
+    // Create the template process: clone with namespaces, pivot_root,
+    // mmap weights, touch all pages. Blocks until template is ready.
     void init();
 
-    // Fork a child from the template. Returns a handle to the new process.
+    // Fork a child from the template that does per-request work (touch
+    // all weight pages), signals ready, then exits. Blocks until child
+    // is done. Returns a handle with the total fork-to-ready timing.
     SandboxHandle fork_child();
 
     // Tear down the template process.
@@ -27,8 +36,8 @@ public:
 private:
     SandboxConfig cfg_;
     pid_t template_pid_ = -1;
-    int   cmd_fd_       = -1;   // write-end: send 'F' to request fork
-    int   resp_fd_      = -1;   // read-end:  receive child pid
+    int   cmd_fd_       = -1;   // write-end: send 'F' or 'Q' to template
+    int   resp_fd_      = -1;   // read-end: receive 'D' (done) from template
     std::string cgroup_path_;
 };
 
