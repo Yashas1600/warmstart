@@ -10,11 +10,9 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <map>
 #include <numeric>
-
-#ifdef __linux__
 #include <sys/resource.h>
-#endif
 
 namespace ws {
 
@@ -23,33 +21,25 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 long get_minor_faults() {
-#ifdef __linux__
     struct rusage ru;
     getrusage(RUSAGE_CHILDREN, &ru);
     return ru.ru_minflt;
-#else
-    return 0;
-#endif
 }
 
 long get_major_faults() {
-#ifdef __linux__
     struct rusage ru;
     getrusage(RUSAGE_CHILDREN, &ru);
     return ru.ru_majflt;
-#else
-    return 0;
-#endif
 }
 
 double percentile(std::vector<double>& data, double p) {
     if (data.empty()) return 0;
     std::sort(data.begin(), data.end());
-    double idx = p / 100.0 * (data.size() - 1);
+    double idx = p / 100.0 * static_cast<double>(data.size() - 1);
     size_t lo = static_cast<size_t>(idx);
     size_t hi = lo + 1;
     if (hi >= data.size()) return data.back();
-    double frac = idx - lo;
+    double frac = idx - static_cast<double>(lo);
     return data[lo] * (1 - frac) + data[hi] * frac;
 }
 
@@ -57,15 +47,10 @@ RunResult run_single_cold(const SandboxConfig& cfg, int run_id) {
     long mf_before = get_minor_faults();
     long MF_before = get_major_faults();
 
+    auto t0 = Clock::now();
     auto h = launch_cold(cfg);
-
-    // Wait for workload ready signal.
-    double wait_ms = 0;
-    try {
-        wait_ms = wait_ready(h, 30000);
-    } catch (...) {
-        // Workload may not signal if rootfs isn't set up — record anyway.
-    }
+    double wait_ms = wait_ready(h, 30000);
+    auto t1 = Clock::now();
 
     long mf_after = get_minor_faults();
     long MF_after = get_major_faults();
@@ -73,47 +58,47 @@ RunResult run_single_cold(const SandboxConfig& cfg, int run_id) {
     RunResult r;
     r.strategy       = "cold";
     r.run_id         = run_id;
-    r.total_ms       = h.timings.total_ms + wait_ms;
+    r.total_ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
     r.ns_create_ms   = h.timings.ns_create_ms;
     r.cgroup_ms      = h.timings.cgroup_ms;
-    r.mount_ms       = h.timings.mount_ms;
-    r.exec_ms        = h.timings.exec_ms;
-    r.weight_load_ms = h.timings.weight_load_ms;
+    r.mount_ms       = 0;  // child-side, not separately measurable from parent
+    r.exec_ms        = 0;
+    r.weight_load_ms = 0;
     r.minor_faults   = mf_after - mf_before;
     r.major_faults   = MF_after - MF_before;
-    r.rss_kb         = 0;  // filled from cgroup if available
+    r.rss_kb         = 0;
 
     teardown(h);
     return r;
 }
 
 RunResult run_single_warm(WarmPool& pool, int run_id) {
-    long mf_before = get_minor_faults();
-
-    auto t0 = Clock::now();
+    // Acquire a parked sandbox (not timed — pool wait is not startup latency).
     auto h = pool.acquire();
+
+    long mf_before = get_minor_faults();
+    long MF_before = get_major_faults();
+
+    // Timed portion: send go -> workload ready.
+    auto t0 = Clock::now();
+    send_go(h);
+    double wait_ms = wait_ready(h, 30000);
     auto t1 = Clock::now();
 
-    double acquire_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
-
-    double wait_ms = 0;
-    try {
-        wait_ms = wait_ready(h, 30000);
-    } catch (...) {}
-
     long mf_after = get_minor_faults();
+    long MF_after = get_major_faults();
 
     RunResult r;
     r.strategy       = "warm-pool";
     r.run_id         = run_id;
-    r.total_ms       = acquire_ms + wait_ms;
+    r.total_ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
     r.ns_create_ms   = 0;  // pre-created
-    r.cgroup_ms      = 0;
-    r.mount_ms       = 0;
-    r.exec_ms        = acquire_ms;
-    r.weight_load_ms = h.timings.weight_load_ms;
+    r.cgroup_ms      = 0;  // pre-created
+    r.mount_ms       = 0;  // pre-created
+    r.exec_ms        = 0;
+    r.weight_load_ms = 0;
     r.minor_faults   = mf_after - mf_before;
-    r.major_faults   = 0;
+    r.major_faults   = MF_after - MF_before;
     r.rss_kb         = 0;
 
     teardown(h);
@@ -122,25 +107,30 @@ RunResult run_single_warm(WarmPool& pool, int run_id) {
 
 RunResult run_single_zygote(Zygote& zyg, int run_id) {
     long mf_before = get_minor_faults();
+    long MF_before = get_major_faults();
 
+    // fork_child blocks until the child finishes work and signals ready.
+    auto t0 = Clock::now();
     auto h = zyg.fork_child();
+    auto t1 = Clock::now();
 
     long mf_after = get_minor_faults();
+    long MF_after = get_major_faults();
 
     RunResult r;
     r.strategy       = "zygote";
     r.run_id         = run_id;
-    r.total_ms       = h.timings.total_ms;
-    r.ns_create_ms   = 0;
+    r.total_ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    r.ns_create_ms   = 0;  // inherited from template
     r.cgroup_ms      = 0;
     r.mount_ms       = 0;
-    r.exec_ms        = h.timings.exec_ms;
-    r.weight_load_ms = 0;  // COW
+    r.exec_ms        = 0;
+    r.weight_load_ms = 0;  // COW — pages already resident
     r.minor_faults   = mf_after - mf_before;
-    r.major_faults   = 0;
+    r.major_faults   = MF_after - MF_before;
     r.rss_kb         = 0;
 
-    teardown(h);
+    // No teardown needed — child already exited and was reaped by template.
     return r;
 }
 
@@ -171,7 +161,8 @@ std::vector<RunResult> run_benchmarks(const SandboxConfig& sandbox_cfg,
     // ── Warm pool ─────────────────────────────────────────
     if (bench_cfg.run_warm) {
         std::cout << "[bench] Running " << bench_cfg.num_runs
-                  << " warm-pool iterations (pool=" << bench_cfg.pool_size << ")...\n";
+                  << " warm-pool iterations (pool=" << bench_cfg.pool_size
+                  << ")...\n";
         WarmPool pool(scfg, bench_cfg.pool_size);
         for (int i = 0; i < bench_cfg.num_runs; ++i) {
             results.push_back(run_single_warm(pool, i));
@@ -224,7 +215,6 @@ void write_csv(const std::vector<RunResult>& results, const std::string& path) {
 }
 
 void print_summary(const std::vector<RunResult>& results) {
-    // Group by strategy.
     std::map<std::string, std::vector<double>> by_strategy;
     for (const auto& r : results) {
         by_strategy[r.strategy].push_back(r.total_ms);
@@ -251,10 +241,10 @@ void print_summary(const std::vector<RunResult>& results) {
         double p90 = percentile(latencies, 90);
         double p99 = percentile(latencies, 99);
         double mean = std::accumulate(latencies.begin(), latencies.end(), 0.0)
-                      / latencies.size();
+                      / static_cast<double>(latencies.size());
         double var = 0;
         for (double v : latencies) var += (v - mean) * (v - mean);
-        double stddev = std::sqrt(var / latencies.size());
+        double stddev = std::sqrt(var / static_cast<double>(latencies.size()));
 
         std::cout << std::left << std::setw(14) << name
                   << std::right << std::fixed << std::setprecision(2)

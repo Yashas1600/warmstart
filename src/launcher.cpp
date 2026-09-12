@@ -47,10 +47,10 @@ LauncherOpts parse_args(int argc, char* argv[]) {
             std::exit(1);
         };
 
-        if (arg("--strategy"))      opts.strategy     = next();
-        else if (arg("--rootfs"))   opts.rootfs       = next();
-        else if (arg("--workload")) opts.workload     = next();
-        else if (arg("--weights"))  opts.weights_path = next();
+        if (arg("--strategy"))          opts.strategy     = next();
+        else if (arg("--rootfs"))       opts.rootfs       = next();
+        else if (arg("--workload"))     opts.workload     = next();
+        else if (arg("--weights"))      opts.weights_path = next();
         else if (arg("--weights-size")) opts.weights_size = std::stoull(next());
         else if (arg("--mem-limit"))    opts.mem_limit    = std::stoull(next());
         else if (arg("--cpu-weight"))   opts.cpu_weight   = std::stoi(next());
@@ -84,11 +84,9 @@ int run(const LauncherOpts& opts) {
     if (opts.strategy == "cold") {
         std::cout << "[warmstart] Launching cold sandbox...\n";
         auto h = launch_cold(scfg);
-        std::cout << "[warmstart] Sandbox PID: " << h.pid << "\n";
-        std::cout << "[warmstart] Phase timings:\n"
+        std::cout << "[warmstart] Sandbox PID: " << h.pid << "\n"
                   << "  namespace: " << h.timings.ns_create_ms << " ms\n"
                   << "  cgroup:    " << h.timings.cgroup_ms    << " ms\n"
-                  << "  mount:     " << h.timings.mount_ms     << " ms\n"
                   << "  total:     " << h.timings.total_ms     << " ms\n";
         try {
             double wait = wait_ready(h);
@@ -103,7 +101,8 @@ int run(const LauncherOpts& opts) {
                   << opts.pool_size << ")...\n";
         WarmPool pool(scfg, opts.pool_size);
         auto h = pool.acquire();
-        std::cout << "[warmstart] Acquired sandbox PID: " << h.pid << "\n";
+        std::cout << "[warmstart] Acquired parked sandbox, sending go...\n";
+        send_go(h);
         try {
             double wait = wait_ready(h);
             std::cout << "[warmstart] Workload ready in " << wait << " ms\n";
@@ -119,9 +118,8 @@ int run(const LauncherOpts& opts) {
         zyg.init();
         std::cout << "[warmstart] Forking child from template...\n";
         auto h = zyg.fork_child();
-        std::cout << "[warmstart] Child PID: " << h.pid
-                  << " (fork latency: " << h.timings.total_ms << " ms)\n";
-        teardown(h);
+        std::cout << "[warmstart] Child done (fork-to-ready: "
+                  << h.timings.total_ms << " ms)\n";
         zyg.shutdown();
 
     } else if (opts.strategy == "benchmark") {

@@ -6,7 +6,6 @@ compile_commands.json
 *.a
 *.so
 *.bin
-results.csv
 *.png
 .DS_Store
 __pycache__/

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(warmstart VERSION 0.1.0 LANGUAGES CXX)
+project(warmstart VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -18,8 +18,9 @@ add_executable(warmstart
 target_include_directories(warmstart PRIVATE src)
 target_link_libraries(warmstart PRIVATE pthread)
 
-# ── Dummy workload ────────────────────────────────────────────
+# ── Dummy workload (static so it runs in any rootfs) ──────────
 add_executable(dummy_workload workload/dummy_workload.cpp)
+target_link_options(dummy_workload PRIVATE -static)
 
 # ── Tests ─────────────────────────────────────────────────────
 enable_testing()
@@ -32,3 +33,11 @@ add_executable(test_pool tests/test_pool.cpp src/pool.cpp src/sandbox.cpp src/cg
 target_include_directories(test_pool PRIVATE src)
 target_link_libraries(test_pool PRIVATE pthread)
 add_test(NAME pool_tests COMMAND test_pool)
+
+add_executable(test_integration
+    tests/test_integration.cpp
+    src/sandbox.cpp src/cgroup.cpp src/pool.cpp src/zygote.cpp src/benchmark.cpp
+)
+target_include_directories(test_integration PRIVATE src)
+target_link_libraries(test_integration PRIVATE pthread)
+add_test(NAME integration_tests COMMAND test_integration)
