@@ -13,8 +13,7 @@
 FROM ubuntu:24.04 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential cmake g++ python3 python3-pip python3-venv \
-    curl ca-certificates \
+    build-essential cmake g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /warmstart
@@ -39,9 +38,11 @@ WORKDIR /warmstart
 
 COPY --from=builder /warmstart/build/warmstart /usr/local/bin/warmstart
 COPY --from=builder /warmstart/build/dummy_workload /usr/local/bin/dummy_workload
+COPY --from=builder /warmstart/build/test_cgroup /usr/local/bin/test_cgroup
+COPY --from=builder /warmstart/build/test_pool /usr/local/bin/test_pool
+COPY --from=builder /warmstart/build/test_integration /usr/local/bin/test_integration
 COPY scripts/ scripts/
 
-# Build rootfs on container start.
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
